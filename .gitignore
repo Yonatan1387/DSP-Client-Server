@@ -216,3 +216,16 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+
+# C++ / Visual Studio
+.vs/
+*.user
+*.suo
+Debug/
+Release/
+x64/
+x86/
+*.obj
+*.exe
+*.pdb
