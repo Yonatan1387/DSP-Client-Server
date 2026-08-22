@@ -39,6 +39,30 @@ void sendRequest(tcp::socket& socket, uint16_t code, const std::string& name, co
     boost::asio::write(socket, buffers);
 }
 
+void receiveResponse(tcp::socket& socket, uint8_t receivedVersion, uint16_t receivedCode, uint32_t receivedPayloadSize, uint8_t receivedClientID[16],
+        const uint8_t AES_key[] = 0, const uint32_t contectSize = 0, const uint8_t fileName[255] = 0, const uint32_t Cksum = 0) {
+
+    std::vector<uint8_t> headerBuffer(7);
+    boost::asio::read(socket, boost::asio::buffer(headerBuffer));
+
+    receivedVersion = headerBuffer[0];
+    receivedCode = extractUint16(headerBuffer, 1);
+    receivedPayloadSize = extractUint32(headerBuffer, 3);
+
+    if (receivedPayloadSize > 0) {
+        std::vector<uint8_t> payloadBuffer(receivedPayloadSize);
+        boost::asio::read(socket, boost::asio::buffer(payloadBuffer));
+
+        if (receivedCode == 1600 || receivedCode == 1604 || receivedCode == 1606) {
+            if (receivedPayloadSize == 16) {
+                for (int i = 0; i < 16; i++) {
+                    receivedClientID[i] = payloadBuffer[i];
+                }
+            }
+        }
+    }
+}
+
 int main()
 {
     std::ifstream meFile("me.info");
@@ -60,13 +84,13 @@ int main()
         if (transferFile.is_open()) {
             while (std::getline(transferFile, line)) {
                 if (line.find("\"ip\"") != std::string::npos) {
-                    serverIP = extractStringVal(line);
+                    serverIP = extractStringValJSON(line);
                 }
                 else if (line.find("\"port\"") != std::string::npos) {
-                    port = extractIntVal(line);
+                    port = extractIntValJSON(line);
                 }
                 else if (line.find("\"client\"") != std::string::npos) {
-                    name = extractStringVal(line);
+                    name = extractStringValJSON(line);
                 }
             }
 
@@ -79,11 +103,19 @@ int main()
             boost::asio::connect(s, resolver.resolve(serverIP, port));
 
             sendRequest(s, 825, name);
+
+            uint8_t version = 0;
+            uint16_t code = 0;
+            uint32_t payloadSize = 0;
+            uint8_t clientID[16];
+
+            receiveResponse(s, version, code, payloadSize, clientID);
             
         }
         else {
             std::cerr << "Error: failed to open transfer.json." << std::endl;
         }
+
 
     }
 
@@ -92,7 +124,7 @@ int main()
 
 
 
-std::string extractStringVal(std::string& line) {
+std::string extractStringValJSON(std::string& line) {
     int colonPos = line.find(":");
 
     if (colonPos != std::string::npos) {
@@ -110,7 +142,7 @@ std::string extractStringVal(std::string& line) {
     return "";
 }
 
-std::string extractIntVal(std::string& line) {
+std::string extractIntValJSON(std::string& line) {
     int colonPos = line.find(":");
 
     if (colonPos != std::string::npos) {
@@ -140,4 +172,12 @@ void addUint32ToBuffer(std::vector<uint8_t>& buffer, uint32_t value) {
     buffer.push_back((value >> 8) & 0xFF);
     buffer.push_back((value >> 16) & 0xFF);
     buffer.push_back((value >> 24) & 0xFF);
+}
+
+uint16_t extractUint16(std::vector<uint8_t>& buffer, uint16_t offset) {
+    return (uint16_t)buffer[offset] | ((uint16_t)buffer[offset + 1] << 8);
+}
+
+uint32_t extractUint32(std::vector<uint8_t>& buffer, uint32_t offset) {
+    return (uint32_t)buffer[offset] | ((uint32_t)buffer[offset + 1] << 8) | ((uint32_t)buffer[offset + 2] << 16) | ((uint32_t)buffer[offset + 3] << 24);
 }
