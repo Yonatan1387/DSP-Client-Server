@@ -1,11 +1,9 @@
 ﻿#include "DSP-Client.h"
 using boost::asio::ip::tcp;
 
-void sendRequest(tcp::socket& socket, uint16_t code, ClientState& state, const std::string& name, const std::string& key = "", const uint32_t contectSize = 0,
-    const uint32_t origFileSize = 0, const uint32_t packetInfo = 0, const std::string& encryptedFile = "") {
+void sendRequest(tcp::socket& socket, uint16_t code, ClientState& state, const std::string& name, const std::string& key = "", const uint32_t packetInfo = 0) {
 
     RequestHeader header;
-    
 
     for (int i = 0; i < 16; i++) {
         header.clientID[i] = (code == 825) ? 0 : state.clientID[i];
@@ -25,11 +23,11 @@ void sendRequest(tcp::socket& socket, uint16_t code, ClientState& state, const s
         addStringToBuffer(payload, key, 160, false, true);
     }
     else if (code == 828) {
-        addUint32ToBuffer(payload, contectSize);
-        addUint32ToBuffer(payload, origFileSize);
+        addUint32ToBuffer(payload, state.encrypted_file.size());
+        addUint32ToBuffer(payload, state.origFileSize);
         addUint32ToBuffer(payload, packetInfo);
         addStringToBuffer(payload, name, 255);
-        addStringToBuffer(payload, name, 0, true);
+        addFileDataToBuffer(payload, state.encrypted_file);
     }
 
     header.payloadSize = static_cast<uint32_t>(payload.size());
@@ -41,7 +39,7 @@ void sendRequest(tcp::socket& socket, uint16_t code, ClientState& state, const s
 }
 
 void receiveResponse(tcp::socket& socket, uint8_t receivedVersion, uint16_t receivedCode, uint32_t receivedPayloadSize, ClientState& state,
-        uint8_t AES_key[] = 0, const uint32_t contectSize = 0, const uint8_t fileName[255] = 0, const uint32_t Cksum = 0) {
+        uint8_t AES_key[] = 0, const uint32_t contentSize = 0, const uint8_t fileName[255] = 0, const uint32_t Cksum = 0) {
 
     std::vector<uint8_t> headerBuffer(7);
     boost::asio::read(socket, boost::asio::buffer(headerBuffer));
@@ -73,8 +71,14 @@ void receiveResponse(tcp::socket& socket, uint8_t receivedVersion, uint16_t rece
     }
 }
 
-int main()
+int main(int argc, char* argv[])
 {
+    if (argc < 2) {
+        std::cerr << "no file path was given" << std::endl;
+        return 1;
+    }
+    std::string filePath = argv[1];
+
     std::ifstream meFile("me.info");
     std::string line;
     std::vector<std::string> me_info_content;
@@ -114,6 +118,10 @@ int main()
 
             ClientState state;
 
+            for (int i = 0; i < 32; i++) {
+                state.aesKey[i] = 0;
+            }
+
             sendRequest(s, 825, state, name);
 
             uint8_t version = 0;
@@ -128,6 +136,18 @@ int main()
 
             receiveResponse(s, version, code, payloadSize, state);
             
+            decryptAESKey(state);
+
+            encryptFile(filePath, state);
+
+            sendRequest(s, 828, state, filePath, "", 0x00010001);
+
+            std::cout << "Encrypted File Data (Hex, first 64 bytes): ";
+            size_t printLimit = std::min<size_t>(state.encrypted_file.size(), 64);
+            for (size_t i = 0; i < printLimit; ++i) {
+                std::cout << std::hex << std::setfill('0') << std::setw(2) << (int)state.encrypted_file[i] << " ";
+            }
+            std::cout << std::dec << "\n";
         }
         else {
             std::cerr << "Error: failed to open transfer.json." << std::endl;
@@ -192,6 +212,10 @@ void addUint32ToBuffer(std::vector<uint8_t>& buffer, uint32_t value) {
     buffer.push_back((value >> 24) & 0xFF);
 }
 
+void addFileDataToBuffer(std::vector<uint8_t>& buffer, std::vector<uint8_t>& data) {
+    buffer.insert(buffer.end(), data.begin(), data.end());
+}
+
 uint16_t extractUint16(std::vector<uint8_t>& buffer, uint16_t offset) {
     return (uint16_t)buffer[offset] | ((uint16_t)buffer[offset + 1] << 8);
 }
@@ -210,4 +234,54 @@ std::string createRSAPairAndReturnPublicKey(ClientState& state) {
     publicKey.Save(ss);
 
     return publicKeyStr;
+}
+
+void decryptAESKey(ClientState& state) {
+    try {
+        CryptoPP::AutoSeededRandomPool rng;
+        CryptoPP::RSAES_OAEP_SHA256_Decryptor decryptor(state.rsapriv);
+
+        std::string decryptedKey;
+
+        CryptoPP::StringSource(state.encrypted_aes.data(), state.encrypted_aes.size(), true
+            , new CryptoPP::PK_DecryptorFilter(rng, decryptor, new CryptoPP::StringSink(decryptedKey)));
+
+        if (decryptedKey.size() == 32) {
+            for (int i = 0; i < 32; i++) {
+                state.aesKey[i] = decryptedKey[i];
+            }
+        }
+        else {
+            std::cerr << "Decryption failed, decrypted key size is " << decryptedKey.size() << "\n";
+        }
+    }
+    catch (std::exception& e) {
+        std::cerr << "Decryption failed: " << e.what() << "\n";
+    }
+}
+
+void encryptFile(std::string& path, ClientState& state) {
+    std::ifstream file(path, std::ios::binary);
+    if (!file.is_open()) {
+        std::cerr << "Failed to open file: " << path << std::endl;
+    }
+
+    std::vector<uint8_t> fileData((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    state.origFileSize = fileData.size();
+    file.close();
+
+    try {
+        uint8_t IV[16];
+        for (int i = 0; i < 16; i++) {
+            IV[i] = 0;
+        }
+
+        CryptoPP::CBC_Mode<CryptoPP::AES>::Encryption encryptor;
+        encryptor.SetKeyWithIV(state.aesKey, 32, IV);
+
+        CryptoPP::VectorSource v(fileData, true, new CryptoPP::StreamTransformationFilter(encryptor, new CryptoPP::VectorSink(state.encrypted_file)));
+    }
+    catch (std::exception& e) {
+        std::cerr << "File encryption failed: " << e.what() << std::endl;
+    }
 }
