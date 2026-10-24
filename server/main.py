@@ -111,145 +111,151 @@ def main():
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind((HOST, PORT))
         s.listen()
-        conn, addr = s.accept()
-        with conn:
-            print('Connected by', addr)
-            while True:
-                header_data = readNBytes(conn, 23)
-                if not header_data:
-                    print('Connection closed')
-                    break
-
-                client_id_bytes, version, code, payload_size = struct.unpack('<16sBHI', header_data)
-                client_id = int.from_bytes(client_id_bytes, 'little')
-                print(f"Client ID: {client_id_bytes.hex()}", "Version:", version, "Code:", code, "Payload Size:",
-                      payload_size)
-
-                if payload_size > 0:
-                    payload = readNBytes(conn, payload_size)
-                    if not payload:
-                        print("Connection closed")
+        print("Server listening...")
+        while True:
+            conn, addr = s.accept()
+            with conn:
+                print('Connected by', addr)
+                while True:
+                    header_data = readNBytes(conn, 23)
+                    if not header_data:
+                        print('Connection closed')
                         break
 
-                    if code == 825:
-                        name_bytes = struct.unpack('<255s', payload)
-                        name = name_bytes[0].rstrip(b'\x00').decode("utf-8")
-                        print("Name:", name)
+                    client_id_bytes, version, code, payload_size = struct.unpack('<16sBHI', header_data)
+                    client_id = int.from_bytes(client_id_bytes, 'little')
+                    print(f"Client ID: {client_id_bytes.hex()}", "Version:", version, "Code:", code, "Payload Size:",
+                          payload_size)
 
-                        new_uuid = uuid.uuid4()
-                        print("Generated new UUID:", new_uuid.hex)
+                    if payload_size > 0:
+                        payload = readNBytes(conn, payload_size)
+                        if not payload:
+                            print("Connection closed")
+                            break
 
-                        response = createResponse(code=1600, client_id=new_uuid.bytes)
-                        conn.sendall(response)
-                        print("Response sent (1600)")
+                        if code == 825:
+                            name_bytes = struct.unpack('<255s', payload)
+                            name = name_bytes[0].rstrip(b'\x00').decode("utf-8")
+                            print("Name:", name)
 
-                    elif code == 826:
-                        name_bytes = struct.unpack('<255s160s', payload)
-                        name = name_bytes[0].rstrip(b'\x00').decode('utf-8')
-                        print('Name:', name)
+                            new_uuid = uuid.uuid4()
+                            print("Generated new UUID:", new_uuid.hex)
 
-                        RSA_public_key = name_bytes[1]
+                            response = createResponse(code=1600, client_id=new_uuid.bytes)
+                            conn.sendall(response)
+                            print("Response sent (1600)")
 
-                        Users[name] = RSA_public_key
+                        elif code == 826:
+                            name_bytes = struct.unpack('<255s160s', payload)
+                            name = name_bytes[0].rstrip(b'\x00').decode('utf-8')
+                            print('Name:', name)
 
-                        aes_key = get_random_bytes(32)
-                        print(f"AES key: {aes_key.hex()}")
+                            RSA_public_key = name_bytes[1]
+                            aes_key = get_random_bytes(32)
+                            print(f"AES key: {aes_key.hex()}")
 
-                        RSA_public_key_obj = RSA.importKey(RSA_public_key)
+                            Users[name] = {"public key": RSA_public_key, "aes key": aes_key}
 
-                        cipher_rsa = PKCS1_OAEP.new(RSA_public_key_obj, hashAlgo=SHA256)
-                        encrypted_aes_key = cipher_rsa.encrypt(aes_key)
-
-                        response = createResponse(code=1602, client_id=client_id_bytes, aes_key=encrypted_aes_key)
-                        conn.sendall(response)
-                        print("Response sent (1602)")
-
-                    elif code == 827:
-                        name_bytes = struct.unpack('<255s', payload)
-                        name = name_bytes[0].rstrip(b'\x00').decode("utf-8")
-                        print(name, " is attempting to reconnect.")
-
-                        if name in Users.keys():
-                            RSA_public_key_obj = RSA.importKey(Users[name])
+                            RSA_public_key_obj = RSA.importKey(RSA_public_key)
 
                             cipher_rsa = PKCS1_OAEP.new(RSA_public_key_obj, hashAlgo=SHA256)
                             encrypted_aes_key = cipher_rsa.encrypt(aes_key)
 
-                            response = createResponse(code=1605, client_id=client_id_bytes, aes_key=encrypted_aes_key)
+                            response = createResponse(code=1602, client_id=client_id_bytes, aes_key=encrypted_aes_key)
                             conn.sendall(response)
-                            print("Response sent (1605)")
+                            print("Response sent (1602)")
 
-                        else:
-                            response = createResponse(code=1606, client_id=client_id_bytes)
+                        elif code == 827:
+                            name_bytes = struct.unpack('<255s', payload)
+                            name = name_bytes[0].rstrip(b'\x00').decode("utf-8")
+                            print(name, " is attempting to reconnect.")
+
+                            if name in Users.keys():
+                                RSA_public_key_obj = RSA.importKey(Users[name]["public key"])
+
+                                cipher_rsa = PKCS1_OAEP.new(RSA_public_key_obj, hashAlgo=SHA256)
+                                encrypted_aes_key = cipher_rsa.encrypt(Users[name]["aes key"])
+
+                                response = createResponse(code=1605, client_id=client_id_bytes, aes_key=encrypted_aes_key)
+                                conn.sendall(response)
+                                print("Response sent (1605)")
+
+                            else:
+                                response = createResponse(code=1606, client_id=client_id_bytes)
+                                conn.sendall(response)
+                                print("User not found. Reconnection failed.")
+
+                        elif code == 828:
+                            name_bytes = struct.unpack(f'<III255s{payload_size - (4 + 4 + 4 + 255)}s', payload)
+                            content_size = name_bytes[0]
+                            print("Content size:", content_size)
+
+                            orig_file_size = name_bytes[1]
+                            print("Original file size:", orig_file_size)
+
+                            packet_info = name_bytes[2]
+                            packet_number = packet_info & 0xFFFF
+                            print("Packet number:", packet_number)
+                            total_packets = packet_info >> 16
+                            print("Total packets:", total_packets)
+
+                            file_name_bytes = name_bytes[3]
+                            file_name = file_name_bytes.rstrip(b'\x00').decode('utf-8')
+                            print("File name:", file_name)
+
+                            encoded_message_content = name_bytes[4]
+                            print("Encoded message content:", encoded_message_content[::].hex())
+
+                            IV = bytes(16)
+
+                            try:
+                                cipher_aes = AES.new(aes_key, AES.MODE_CBC, iv=IV)
+                                padded_text = cipher_aes.decrypt(encoded_message_content)
+
+                                orig_file_content = unpad(padded_text, AES.block_size)
+
+                                if len(orig_file_content) != orig_file_size:
+                                    print("Warning: The decrypted file size does not match original file size.")
+
+                                crc = memcrc(orig_file_content)
+
+                                Files[file_name] = orig_file_content
+
+                                print("Original message content:", orig_file_content)
+
+                                response = createResponse(code=1603, client_id=client_id_bytes, content_size=len(encoded_message_content), file_name=file_name_bytes, cksum=crc)
+                                conn.sendall(response)
+
+                                print("Response sent (1603)")
+                            except ValueError as e:
+                                print("Failed to encrypt file: ", e)
+
+                        elif code == 900:
+                            file_name_bytes = struct.unpack('<255s', payload)
+                            file_name = file_name_bytes[0].rstrip(b'\x00').decode("utf-8")
+                            print("The file \"", file_name, "\" has been received successfully.")
+
+                            response = createResponse(code=1604, client_id=client_id_bytes)
                             conn.sendall(response)
-                            print("User not found. Reconnection failed.")
+                            print("Confirmation response sent (1604)")
 
-                    elif code == 828:
-                        name_bytes = struct.unpack(f'<III255s{payload_size - (4 + 4 + 4 + 255)}s', payload)
-                        content_size = name_bytes[0]
-                        print("Content size:", content_size)
+                        elif code == 901:
+                            file_name_bytes = struct.unpack('<255s', payload)
+                            file_name = file_name_bytes[0].rstrip(b'\x00').decode("utf-8")
+                            Files.pop(file_name)
+                            print("The file \"", file_name
+                                  , "\" has been received unsuccessfully, waiting for the user to resend.")
 
-                        orig_file_size = name_bytes[1]
-                        print("Original file size:", orig_file_size)
+                        elif code == 902:
+                            file_name_bytes = struct.unpack('<255s', payload)
+                            file_name = file_name_bytes[0].rstrip(b'\x00').decode("utf-8")
+                            Files.pop(file_name)
+                            print("The file \"", file_name
+                                  , "\" has been received unsuccessfully for the fourth time, quiting attempt.")
 
-                        packet_info = name_bytes[2]
-                        packet_number = packet_info & 0xFFFF
-                        print("Packet number:", packet_number)
-                        total_packets = packet_info >> 16
-                        print("Total packets:", total_packets)
-
-                        name = name_bytes[3].rstrip(b'\x00').decode('utf-8')
-                        print("Name:", name)
-
-                        encoded_message_content = name_bytes[4]
-                        print("Encoded message content:", encoded_message_content[::].hex())
-
-                        IV = bytes(16)
-
-                        try:
-                            cipher_aes = AES.new(aes_key, AES.MODE_CBC, iv=IV)
-                            padded_text = cipher_aes.decrypt(encoded_message_content)
-
-                            orig_file_content = unpad(padded_text, AES.block_size)
-
-                            if len(orig_file_content) != orig_file_size:
-                                print("Warning: The decrypted file size does not match original file size.")
-
-                            crc = memcrc(orig_file_content)
-
-                            Files[name] = orig_file_content
-
-                            response = createResponse(code=1603, client_id=client_id_bytes, content_size=len(encoded_message_content), file_name=name, cksum=crc)
+                            response = createResponse(code=1604, client_id=client_id_bytes)
                             conn.sendall(response)
-
-                            print("Response sent (1603)")
-                        except ValueError as e:
-                            print("Failed to encrypt file: " + e)
-
-                    elif code == 900:
-                        file_name_bytes = struct.unpack('<255s', payload)
-                        file_name = file_name_bytes[0].rstrip(b'\x00').decode("utf-8")
-                        print("The file \"", file_name, "\" has been received successfully.")
-
-                        response = createResponse(code=1604, client_id=client_id_bytes)
-                        print("Confirmation response sent (1604)")
-
-                    elif code == 901:
-                        file_name_bytes = struct.unpack('<255s', payload)
-                        file_name = file_name_bytes[0].rstrip(b'\x00').decode("utf-8")
-                        Files.pop(file_name)
-                        print("The file \"", file_name
-                              , "\" has been received unsuccessfully, waiting for the user to resend.")
-
-                    elif code == 902:
-                        file_name_bytes = struct.unpack('<255s', payload)
-                        file_name = file_name_bytes[0].rstrip(b'\x00').decode("utf-8")
-                        Files.pop(file_name)
-                        print("The file \"", file_name
-                              , "\" has been received unsuccessfully for the fourth time, quiting attempt.")
-
-                        response = createResponse(code=1604, client_id=client_id_bytes)
-                        print("Confirmation response sent (1604)")
+                            print("Confirmation response sent (1604)")
 
 
 
