@@ -159,7 +159,7 @@ int main(int argc, char* argv[])
 }
 
 
-void sendRequest(tcp::socket& socket, uint16_t code, ClientState& state, const std::string& name, const std::string& key = "", const uint32_t packetInfo = 0) {
+void sendRequest(tcp::socket& socket, uint16_t code, ClientState& state, const std::string& name, const std::string& key, const uint32_t packetInfo) {
 
     RequestHeader header;
 
@@ -325,7 +325,7 @@ std::string createRSAPairAndReturnPublicKey(ClientState& state) {
 void decryptAESKey(ClientState& state) {
     try {
         CryptoPP::AutoSeededRandomPool rng;
-        CryptoPP::RSAES_OAEP_SHA256_Decryptor decryptor(state.rsapriv);
+        CryptoPP::RSAES_OAEP_SHA_Decryptor decryptor(state.rsapriv);
 
         std::string decryptedKey;
 

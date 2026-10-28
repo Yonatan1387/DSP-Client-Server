@@ -40,7 +40,7 @@ struct ClientState {
 	bool fileReceivedSuccessfully;
 };
 
-void sendRequest(tcp::socket& socket, uint16_t code, ClientState& state, const std::string& name, const std::string& key = "", const uint32_t packetInfo = 0);
+void sendRequest(boost::asio::ip::tcp::socket& socket, uint16_t code, ClientState& state, const std::string& name, const std::string& key = "", const uint32_t packetInfo = 0);
 
 void receiveResponse(boost::asio::ip::tcp::socket& socket, ClientState& state);
 
