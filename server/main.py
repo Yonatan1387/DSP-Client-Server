@@ -12,6 +12,7 @@ HOST = ''
 DEFAULT_PORT = 1369
 PORT_FILE = "port.info"
 VERSION = 3
+CLIENT_TIMEOUT_SECONDS = 300
 
 Users = {}
 Files = {}
@@ -107,7 +108,11 @@ def createResponse(code, client_id=None, aes_key=None, content_size=None, file_n
 def readNBytes(sock, n):
     data = bytearray()
     while len(data) < n:
-        packet = sock.recv(n - len(data))
+        try:
+            packet = sock.recv(n - len(data))
+        except socket.timeout:
+            return None
+
         if not packet:
             return None
         data.extend(packet)
@@ -185,6 +190,7 @@ def handle_client(conn, addr):
     waiting_crc_file = None
 
     with conn:
+        conn.settimeout(CLIENT_TIMEOUT_SECONDS)
         while True:
             header_data = readNBytes(conn, 23)
             if not header_data:
@@ -192,7 +198,6 @@ def handle_client(conn, addr):
                 break
 
             client_id_bytes, version, code, payload_size = struct.unpack('<16sBHI', header_data)
-            print(f"Client ID: {client_id_bytes.hex()} Version: {version} Code: {code} Payload Size: {payload_size}")
 
             if version != VERSION:
                 print("Rejected: invalid version")
@@ -225,7 +230,6 @@ def handle_client(conn, addr):
                         continue
 
                 new_uuid = uuid.uuid4()
-                print("Generated new UUID:", new_uuid.hex)
 
                 # Hold registration in session memory until valid RSA key arrives in 826
                 pending_registration = (name, new_uuid.bytes)
