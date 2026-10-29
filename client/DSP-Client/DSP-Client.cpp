@@ -207,7 +207,10 @@ int main()
 
         for (int tries = 1; tries <= 4; tries++) {
 
-            encryptFile(filePath, state);
+            if (!encryptFile(filePath, state)) {
+                protocolError = true;
+                break;
+            }
 
             sendRequest(s, 828, state, fileNameOnly, "", 0x00010000); // 0x00010000 packs packet_number = 0 (lower 16 bits) and total_packets = 1 (upper 16 bits)
             receiveResponse(s, state);
@@ -411,18 +414,27 @@ void decryptAESKey(ClientState& state) {
     }
 }
 
-void encryptFile(std::string& path, ClientState& state) {
+bool encryptFile(std::string& path, ClientState& state) {
+    state.encrypted_file.clear();
+
     std::ifstream file(path, std::ios::binary);
     if (!file.is_open()) {
         std::cerr << "Failed to open file: " << path << std::endl;
+        return false;
     }
 
     std::vector<uint8_t> fileData((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-    state.origFileSize = fileData.size();
+    file.close();
+
+    if (fileData.empty()) {
+        std::cerr << "File is empty: " << path << std::endl;
+        return false;
+    }
+
+    state.origFileSize = static_cast<uint32_t>(fileData.size());
     state.clientCRC = memcrc(reinterpret_cast<char*>(fileData.data()), fileData.size());
 
     std::cout << "Local CRC calculated: " << state.clientCRC << std::endl;
-    file.close();
 
     try {
         uint8_t IV[16];
@@ -432,14 +444,18 @@ void encryptFile(std::string& path, ClientState& state) {
 
         CryptoPP::CBC_Mode<CryptoPP::AES>::Encryption encryptor;
         encryptor.SetKeyWithIV(state.aesKey, 32, IV);
-        
+
         state.encrypted_file.clear();
 
         CryptoPP::VectorSource v(fileData, true, new CryptoPP::StreamTransformationFilter(encryptor, new CryptoPP::VectorSink(state.encrypted_file)));
     }
-    catch (std::exception& e) {
+    catch (const std::exception& e) {
+        state.encrypted_file.clear();
         std::cerr << "File encryption failed: " << e.what() << std::endl;
+        return false;
     }
+
+    return true;
 }
 
 unsigned long memcrc(char* b, size_t n) {

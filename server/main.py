@@ -453,7 +453,11 @@ def handle_client(conn, addr):
                 waiting_crc_file = None
 
                 if code == 900:
+                    with lock:
+                        received_data = Files.get(file_name)
+
                     print(f"The file \"{file_name}\" has been received successfully.")
+                    print(f'({len(received_data)} bytes in memory).')
 
                     response = createResponse(code=1604, client_id=client_id_bytes)
                     conn.sendall(response)

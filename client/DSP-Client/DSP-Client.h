@@ -68,7 +68,7 @@ uint32_t extractUint32(std::vector<uint8_t>& buffer, uint32_t offset);
 std::string createRSAPairAndReturnPublicKey(ClientState& state);
 
 // Reads a file from disk and encrypts its content.
-void encryptFile(std::string& path, ClientState& state);
+bool encryptFile(std::string& path, ClientState& state);
 
 // Decrypts the 32 byte AES session key received from the server using the client's RSA private key.
 void decryptAESKey(ClientState& state);
