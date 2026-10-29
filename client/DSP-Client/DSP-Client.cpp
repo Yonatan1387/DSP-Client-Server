@@ -1,7 +1,7 @@
 ﻿#include "DSP-Client.h"
 using boost::asio::ip::tcp;
 
-
+// Reads transfer.json, authenticates with the server, and uploads all listed files.
 int main()
 {
     std::string serverIP;
@@ -19,6 +19,7 @@ int main()
     rawBuffer << transferFile.rdbuf();
     transferFile.close();
 
+    // Parse server settings and file list from transfer.json
     try {
         std::string cleanJson = fixJsonBackslashes(rawBuffer.str());
         std::stringstream jsonStream(cleanJson);
@@ -78,7 +79,7 @@ int main()
         return 1;
     }
 
-
+    // Attempt reconnection (827) if me.info exists, otherwise attempt registration (825).
     std::ifstream meFile("me.info");
     bool Registered = meFile.is_open();
     if (Registered) {
@@ -120,7 +121,7 @@ int main()
         }
         meFile.close();
 
-        // Fallback: if private key wasn't in me.info, try reading from priv.key
+        // If private key wasn't in me.info, try reading from priv.key
         if (privKey.empty()) {
             std::ifstream privFile("priv.key");
             if (privFile.is_open()) {
@@ -157,7 +158,7 @@ int main()
             return 1;
         }
     }
-    // if me.info doesnt exists or 827 returned 1606
+    // If me.info doesnt exists or 827 returned 1606, attempt registration
     if (!Registered) {
         std::cout << "Registering new user (825) as " << name << std::endl;
         sendRequest(s, 825, state, name);
@@ -184,6 +185,7 @@ int main()
 
     decryptAESKey(state);
 
+    // Upload each file from transfer.json with up to 4 CRC retry attempts per file
     for (std::string& filePath : filesToSend) {
         std::ifstream testOpen(filePath, std::ios::binary);
         if (!testOpen.is_open()) {
@@ -207,7 +209,7 @@ int main()
 
             encryptFile(filePath, state);
 
-            sendRequest(s, 828, state, fileNameOnly, "", 0x00010000);
+            sendRequest(s, 828, state, fileNameOnly, "", 0x00010000); // 0x00010000 packs packet_number = 0 (lower 16 bits) and total_packets = 1 (upper 16 bits)
             receiveResponse(s, state);
 
             if (state.lastReceivedCode != 1603) {
@@ -345,6 +347,7 @@ void addStringToBuffer(std::vector<uint8_t>& buffer, const std::string& str, siz
         buffer.insert(buffer.end(), str.begin(), str.end());
     }
     else {
+        // Save at least 1 byte for the null terminator on ASCII strings
         size_t maxSize = (isBinary) ? size : size - 1;
         size_t copySize = std::min(str.size(), maxSize);
         buffer.insert(buffer.end(), str.begin(), str.begin() + copySize);

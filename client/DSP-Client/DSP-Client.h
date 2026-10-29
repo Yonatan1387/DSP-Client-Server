@@ -43,30 +43,42 @@ struct ClientState {
 	bool fileReceivedSuccessfully;
 };
 
+// Builds and sends a binary request header and payload according to the given request code.
 void sendRequest(boost::asio::ip::tcp::socket& socket, uint16_t code, ClientState& state, const std::string& name, const std::string& key = "", const uint32_t packetInfo = 0);
 
+// Reads a response header and its payload, updating ClientState.
 void receiveResponse(boost::asio::ip::tcp::socket& socket, ClientState& state);
 
+// Adds a 32 bit unsigned integer to the buffer in little-endian.
 void addUint32ToBuffer(std::vector<uint8_t>& buffer, uint32_t value);
 
+// Adds a zero padded string (or raw binary key) to the payload buffer.
 void addStringToBuffer(std::vector<uint8_t>& buffer, const std::string& str, size_t size, bool dynamic = false, bool isBinary = false);
 
+// Adds raw byte vector content to the payload buffer.
 void addFileDataToBuffer(std::vector<uint8_t>& buffer, std::vector<uint8_t>& data);
 
+// Reads a 16 bit unsigned integer from the buffer in little-endian format.
 uint16_t extractUint16(std::vector<uint8_t>& buffer, uint16_t offset);
 
+// Reads a 32 bit unsigned integer from the buffer in little-endian format.
 uint32_t extractUint32(std::vector<uint8_t>& buffer, uint32_t offset);
 
+// Generates a 1024 bit RSA key pair and returns the public key (160 bytes).
 std::string createRSAPairAndReturnPublicKey(ClientState& state);
 
+// Reads a file from disk and encrypts its content.
 void encryptFile(std::string& path, ClientState& state);
 
+// Decrypts the 32 byte AES session key received from the server using the client's RSA private key.
 void decryptAESKey(ClientState& state);
 
 unsigned long memcrc(char* b, size_t n);
 
+// Saves client registration details to me.info and the private key to priv.key
 void saveMeInfo(const std::string& name, ClientState& state);
 
+// preprocesses raw JSON text so unescaped Windows backslashesb won't crash the JSON parser.
 std::string fixJsonBackslashes(const std::string& rawJson);
 
 

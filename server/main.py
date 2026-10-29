@@ -87,6 +87,7 @@ def memcrc(b):
     return UNSIGNED(~s)
 
 
+# Packs binary server responses in little-endian format according to the response code.
 def createResponse(code, client_id=None, aes_key=None, content_size=None, file_name=None, cksum=None):
     if code == 1600 or code == 1604 or code == 1606:
         return struct.pack("<BHI16s", 3, code, 16, client_id)
@@ -102,6 +103,7 @@ def createResponse(code, client_id=None, aes_key=None, content_size=None, file_n
     return None
 
 
+# Reads exactly n bytes from the socket, returning None if the client disconnects early.
 def readNBytes(sock, n):
     data = bytearray()
     while len(data) < n:
@@ -112,6 +114,7 @@ def readNBytes(sock, n):
     return data
 
 
+# Sends an error response code to the client and ignores socket errors if already closed.
 def reject(conn, code=1607):
     try:
         conn.sendall(createResponse(code=code))
@@ -119,6 +122,7 @@ def reject(conn, code=1607):
         pass
 
 
+# Verifies that the given payload size matches the expected protocol size for each opcode.
 def is_valid_payload_size(code, payload_size):
     if code in (825, 827, 900, 901, 902):
         return payload_size == 255
@@ -130,6 +134,7 @@ def is_valid_payload_size(code, payload_size):
     return False
 
 
+# Validates that the name is a 255-byte ,null terminated, printable ASCII string with clean zero padding.
 def parse_and_validate_name(raw_bytes):
     if len(raw_bytes) != 255 or b'\x00' not in raw_bytes:
         return None
@@ -153,6 +158,7 @@ def parse_and_validate_name(raw_bytes):
         return None
 
 
+# Reads the listening port from port.info, falling back to 1369 if missing or invalid.
 def get_port(filename=PORT_FILE, default=DEFAULT_PORT):
     try:
         with open(filename, "r", encoding="utf-8") as f:
@@ -169,7 +175,7 @@ def get_port(filename=PORT_FILE, default=DEFAULT_PORT):
     return default
 
 
-
+# Manages a single client TCP session.
 def handle_client(conn, addr):
     print('Connected by', addr)
     session_aes_key = None
@@ -186,7 +192,6 @@ def handle_client(conn, addr):
                 break
 
             client_id_bytes, version, code, payload_size = struct.unpack('<16sBHI', header_data)
-            client_id = int.from_bytes(client_id_bytes, 'little')
             print(f"Client ID: {client_id_bytes.hex()} Version: {version} Code: {code} Payload Size: {payload_size}")
 
             if version != VERSION:
@@ -204,6 +209,7 @@ def handle_client(conn, addr):
                 print("Connection closed")
                 break
 
+            # 825: Initial registration request
             if code == 825:
                 name = parse_and_validate_name(payload)
 
@@ -221,6 +227,7 @@ def handle_client(conn, addr):
                 new_uuid = uuid.uuid4()
                 print("Generated new UUID:", new_uuid.hex)
 
+                # Hold registration in session memory until valid RSA key arrives in 826
                 pending_registration = (name, new_uuid.bytes)
                 session_client_id = new_uuid.bytes
                 session_aes_key = None
@@ -229,6 +236,7 @@ def handle_client(conn, addr):
                 conn.sendall(response)
                 print("Response sent (1600)")
 
+            # 826: Public key submission and AES key generation
             elif code == 826:
                 if pending_registration is None:
                     print("Rejected: 826 received without prior 825.")
@@ -273,6 +281,7 @@ def handle_client(conn, addr):
                 conn.sendall(response)
                 print("Response sent (1602)")
 
+            # 827: Reconnection / Login request
             elif code == 827:
                 name = parse_and_validate_name(payload)
                 print(name, " is attempting to reconnect.")
@@ -302,6 +311,7 @@ def handle_client(conn, addr):
                     conn.sendall(response)
                     print("User not found. Reconnection failed.")
 
+            # 828: Encrypted file upload
             elif code == 828:
                 if waiting_crc_file is not None:
                     print("Rejected: New upload started while waiting for CRC check.")
@@ -349,6 +359,7 @@ def handle_client(conn, addr):
                     reject(conn, )
                     break
 
+                # Initialize upload state on the first packet
                 if upload_state is None:
                     if packet_number != 0:
                         print(f"Rejected: First packet had unexpected number {packet_number}.")
@@ -359,6 +370,7 @@ def handle_client(conn, addr):
                                     "orig_file_size": orig_file_size, "total_packets": total_packets,
                                     "expected_packet": packet_number, "buffer": bytearray()}
 
+                # Check that packet data is consistent across all chunks of the same file
                 if (file_name != upload_state["file_name"] or content_size != upload_state["content_size"] or
                         orig_file_size != upload_state["orig_file_size"] or total_packets != upload_state[
                             "total_packets"]
@@ -378,7 +390,7 @@ def handle_client(conn, addr):
                     reject(conn)
                     break
 
-                # Final packet check
+                # Once all packets have arrived, decrypt and compute CRC
                 if packets_received == total_packets:
                     if len(upload_state["buffer"]) != content_size:
                         print("Rejected: Final buffer size does not match content_size.")
@@ -416,7 +428,7 @@ def handle_client(conn, addr):
 
                     print("Response sent (1603)")
 
-
+            # 900 / 901 / 902: Client CRC verification results
             elif code in (900, 901, 902):
                 if upload_state is not None:
                     print("Rejected: CRC received before all file packets arrived.")
@@ -458,6 +470,7 @@ def handle_client(conn, addr):
                     print("Confirmation response sent (1604)")
 
 
+# Initializes the TCP server socket and crates a worker thread for each client connection.
 def main():
     PORT = get_port(PORT_FILE, 1369)
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
