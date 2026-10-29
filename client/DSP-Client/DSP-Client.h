@@ -11,6 +11,9 @@
 #include <cryptopp/filters.h>
 #include <cryptopp/modes.h>
 #include <cryptopp/base64.h>
+#include <boost/property_tree/ptree.hpp>
+#include <boost/property_tree/json_parser.hpp>
+#include <sstream>
 
 #pragma pack(push, 1)
 struct RequestHeader {
@@ -44,10 +47,6 @@ void sendRequest(boost::asio::ip::tcp::socket& socket, uint16_t code, ClientStat
 
 void receiveResponse(boost::asio::ip::tcp::socket& socket, ClientState& state);
 
-std::string extractStringValJSON(std::string& line);
-
-std::string extractIntValJSON(std::string& line);
-
 void addUint32ToBuffer(std::vector<uint8_t>& buffer, uint32_t value);
 
 void addStringToBuffer(std::vector<uint8_t>& buffer, const std::string& str, size_t size, bool dynamic = false, bool isBinary = false);
@@ -67,6 +66,8 @@ void decryptAESKey(ClientState& state);
 unsigned long memcrc(char* b, size_t n);
 
 void saveMeInfo(const std::string& name, ClientState& state);
+
+std::string fixJsonBackslashes(const std::string& rawJson);
 
 
 uint_fast32_t const crctab[8][256] = {

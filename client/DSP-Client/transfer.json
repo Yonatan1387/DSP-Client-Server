@@ -2,6 +2,10 @@
  "server": {
  "ip": "127.0.0.1",
  "port": 1369,
- "client": "MyComputer"
- }
+ "client": "MyComputer2"
+ },
+  "files": [
+    "C:\\Users\\Yonatan\\Downloads\\maman06\\client\\DSP-Client\\message.txt",
+    "C:\Users\Yonatan\Downloads\maman06\client\DSP-Client\me.info"
+  ]
 }

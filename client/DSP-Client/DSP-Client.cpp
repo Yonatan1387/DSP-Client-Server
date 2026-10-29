@@ -2,59 +2,95 @@
 using boost::asio::ip::tcp;
 
 
-int main(int argc, char* argv[])
+int main()
 {
-    if (argc < 2) {
-        std::cerr << "no file path was given" << std::endl;
-        return 1;
-    }
-    std::string filePath = argv[1];
-
-    std::string line;
-    std::vector<std::string> me_info_content;
-
     std::string serverIP;
     std::string port;
     std::string name;
-
-    ClientState state;
+    std::vector<std::string> filesToSend;
 
     std::ifstream transferFile("transfer.json");
-    if (transferFile.is_open()) {
-        while (std::getline(transferFile, line)) {
-            if (line.find("\"ip\"") != std::string::npos) {
-                serverIP = extractStringValJSON(line);
-            }
-            else if (line.find("\"port\"") != std::string::npos) {
-                port = extractIntValJSON(line);
-            }
-            else if (line.find("\"client\"") != std::string::npos) {
-                name = extractStringValJSON(line);
-            }
-        }
-    }
-    else {
+    if (!transferFile.is_open()) {
         std::cerr << "Error: failed to open transfer.json." << std::endl;
         return 1;
     }
+
+    std::stringstream rawBuffer;
+    rawBuffer << transferFile.rdbuf();
     transferFile.close();
+
+    try {
+        std::string cleanJson = fixJsonBackslashes(rawBuffer.str());
+        std::stringstream jsonStream(cleanJson);
+
+        boost::property_tree::ptree pt;
+        boost::property_tree::read_json(jsonStream, pt);
+
+        if (pt.find("server") != pt.not_found()) {
+            serverIP = pt.get<std::string>("server.ip");
+            port = pt.get<std::string>("server.port");
+            name = pt.get<std::string>("server.client");
+        }
+        else {
+            serverIP = pt.get<std::string>("ip");
+            port = pt.get<std::string>("port");
+            name = pt.get<std::string>("client");
+        }
+
+        if (name.empty() || name.length() > 100) {
+            std::cerr << "Error: client name in transfer.json must be between 1 and 100 characters." << std::endl;
+            return 1;
+        }
+
+        for (const auto& item : pt.get_child("files")) {
+            std::string filePath = item.second.get_value<std::string>();
+            if (!filePath.empty()) {
+                filesToSend.push_back(filePath);
+            }
+        }
+    }
+    catch (const std::exception& e) {
+        std::cerr << "Error parsing transfer.json: " << e.what() << std::endl;
+        return 1;
+    }
+
+    if (filesToSend.empty()) {
+        std::cerr << "Error: No files specified in transfer.json." << std::endl;
+        return 1;
+    }
+
+    ClientState state;
+    for (int i = 0; i < 32; i++) {
+        state.aesKey[i] = 0;
+    }
+
 
     boost::asio::io_context io_context;
     tcp::socket s(io_context);
     tcp::resolver resolver(io_context);
 
-    boost::asio::connect(s, resolver.resolve(serverIP, port));
-
-    for (int i = 0; i < 32; i++) {
-        state.aesKey[i] = 0;
+    try {
+        boost::asio::connect(s, resolver.resolve(serverIP, port));
+        std::cout << "Connected to server " << serverIP << ":" << port << std::endl;
     }
+    catch (const std::exception& e) {
+        std::cerr << "Failed to connect to server: " << e.what() << std::endl;
+        return 1;
+    }
+
 
     std::ifstream meFile("me.info");
     bool Registered = meFile.is_open();
     if (Registered) {
         int row = 1;
+        std::string line;
         std::string privKey = "";
+
         while (std::getline(meFile, line)) {
+            if (!line.empty() && line.back() == '\r') {
+                line.pop_back();
+            }
+
             if (row == 1) {
                 if (line.length() > 100) {
                     std::cerr << "clients' name in the file me.info is too long." << std::endl;
@@ -76,7 +112,7 @@ int main(int argc, char* argv[])
                     return 1;
                 }
             }
-            else if (row == 3) {
+            else if (row >= 3) {
                 privKey += line;
             }
 
@@ -84,6 +120,19 @@ int main(int argc, char* argv[])
         }
         meFile.close();
 
+        // Fallback: if private key wasn't in me.info, try reading from priv.key
+        if (privKey.empty()) {
+            std::ifstream privFile("priv.key");
+            if (privFile.is_open()) {
+                while (std::getline(privFile, line)) {
+                    if (!line.empty() && line.back() == '\r') {
+                        line.pop_back();
+                    }
+                    privKey += line;
+                }
+                privFile.close();
+            }
+        }
         if (!privKey.empty()) {
             try {
                 CryptoPP::StringSource ss(privKey, true, new CryptoPP::Base64Decoder);
@@ -95,64 +144,108 @@ int main(int argc, char* argv[])
             }
         }
 
+        std::cout << "Attempting login (827) as " << name << std::endl;
         sendRequest(s, 827, state, name);
         receiveResponse(s, state);
 
         if (state.lastReceivedCode == 1606) {
-            std::cout << "Recconection failed (1606), registering as a new user." << std::endl;
+            std::cout << "Reconnection failed (1606), registering as a new user." << std::endl;
             Registered = false;
         }
+        else if (state.lastReceivedCode != 1605) {
+            std::cerr << "Unexpected server response during login: " << state.lastReceivedCode << std::endl;
+            return 1;
+        }
     }
-    // if me.info doesnt exists
+    // if me.info doesnt exists or 827 returned 1606
     if (!Registered) {
+        std::cout << "Registering new user (825) as " << name << std::endl;
         sendRequest(s, 825, state, name);
         receiveResponse(s, state);
 
+        if (state.lastReceivedCode != 1600) {
+            std::cerr << "Registration failed with code: " << state.lastReceivedCode << std::endl;
+            return 1;
+        }
+
         std::string publicKeyStr = createRSAPairAndReturnPublicKey(state);
 
+        std::cout << "Sending RSA public key (826)" << std::endl;
         sendRequest(s, 826, state, name, publicKeyStr);
         receiveResponse(s, state);
+
+        if (state.lastReceivedCode != 1602) {
+            std::cerr << "Sending public key failed with code: " << state.lastReceivedCode << std::endl;
+            return 1;
+        }
 
         saveMeInfo(name, state);
     }
 
     decryptAESKey(state);
-    state.fileReceivedSuccessfully = false;
 
-    std::string fileNameOnly = filePath;
-    size_t lastSlash = filePath.find_last_of("/\\");
-    if (lastSlash != std::string::npos) {
-        fileNameOnly = filePath.substr(lastSlash + 1);
-    }
+    for (std::string& filePath : filesToSend) {
+        std::ifstream testOpen(filePath, std::ios::binary);
+        if (!testOpen.is_open()) {
+            std::cerr << "Error: Failed to open the file " << filePath << ". Skipping to the next file." << std::endl;
+            continue;
+        }
+        testOpen.close();
 
-    for (int tries = 1; tries <= 3; tries++) {
+        state.fileReceivedSuccessfully = false;
 
-        encryptFile(filePath, state);
+        std::string fileNameOnly = filePath;
+        size_t lastSlash = filePath.find_last_of("/\\");
+        if (lastSlash != std::string::npos) {
+            fileNameOnly = filePath.substr(lastSlash + 1);
+        }
 
-        sendRequest(s, 828, state, fileNameOnly, "", 0x00010001);
+        std::cout << "Uploading file " << fileNameOnly << std::endl;
+        bool protocolError = false;
+
+        for (int tries = 1; tries <= 4; tries++) {
+
+            encryptFile(filePath, state);
+
+            sendRequest(s, 828, state, fileNameOnly, "", 0x00010000);
+            receiveResponse(s, state);
+
+            if (state.lastReceivedCode != 1603) {
+                std::cerr << "Server rejected upload of " << fileNameOnly << " with code: " << state.lastReceivedCode << std::endl;
+                protocolError = true;
+                break;
+            }
+
+            if (state.clientCRC == state.lastReceivedCksum)
+            {
+                state.fileReceivedSuccessfully = true;
+                sendRequest(s, 900, state, fileNameOnly);
+                break;
+            }
+            else if (tries < 4) {
+                std::cout << "CRC mismatch on attempt " << tries << " for " << fileNameOnly << ", retrying (901)" << std::endl;
+                sendRequest(s, 901, state, fileNameOnly);
+            }
+            else {
+                std::cout << "CRC mismatch on final attempt (4) for " << fileNameOnly << ", aborting file (902)" << std::endl;
+                sendRequest(s, 902, state, fileNameOnly);
+            }
+
+        }
+
+        if (protocolError) {
+            continue;
+        }
+
+        // Wait for server ACK (1604) after 900 or 902
         receiveResponse(s, state);
 
-        if (state.clientCRC == state.lastReceivedCksum)
-        {
-            state.fileReceivedSuccessfully = true;
-            sendRequest(s, 900, state, fileNameOnly);
-            break;
-        }
-        else if (tries != 3) {
-            sendRequest(s, 901, state, fileNameOnly);
+        if (state.fileReceivedSuccessfully) {
+            std::cout << "The file " << fileNameOnly << " was sent and received successfully (1604)." << std::endl;
         }
         else {
-            sendRequest(s, 902, state, fileNameOnly);
+            std::cout << "The file " << fileNameOnly << " was not received successfully (CRC check failed 4 times)." << std::endl;
         }
-
-    }
-
-    receiveResponse(s, state);
-    if (state.fileReceivedSuccessfully) {
-        std::cout << "File sent and received successfully." << std::endl;
-    }
-    else {
-        std::cout << "File was not received successfully (CRC check failed 3 times)." << std::endl;
     }
 
     return 0;
@@ -246,37 +339,6 @@ void receiveResponse(tcp::socket& socket, ClientState& state) {
     }
 }
 
-
-std::string extractStringValJSON(std::string& line) {
-    int colonPos = line.find(":");
-
-    if (colonPos != std::string::npos) {
-        int firstQuotePos = line.find("\"", colonPos);
-
-        if (firstQuotePos != std::string::npos) {
-            int secondQuotePos = line.find("\"", firstQuotePos + 1);
-
-            if (secondQuotePos != std::string::npos) {
-                return line.substr(firstQuotePos + 1, secondQuotePos - firstQuotePos - 1);
-            }
-        }
-    }
-
-    return "";
-}
-
-std::string extractIntValJSON(std::string& line) {
-    int colonPos = line.find(":");
-
-    if (colonPos != std::string::npos) {
-        int commaPos = line.find(",", colonPos + 1);
-
-        if (commaPos != std::string::npos) {
-            return line.substr(colonPos + 2, commaPos - (colonPos + 2));
-        }
-    }
-    return "";
-}
 
 void addStringToBuffer(std::vector<uint8_t>& buffer, const std::string& str, size_t size, bool dynamic, bool isBinary) {
     if (dynamic) {
@@ -396,6 +458,11 @@ unsigned long memcrc(char* b, size_t n) {
 }
 
 void saveMeInfo(const std::string& name, ClientState& state) {
+    std::string base64PrivKey;
+    CryptoPP::Base64Encoder encoder(new CryptoPP::StringSink(base64PrivKey), false);
+    state.rsapriv.Save(encoder);
+    encoder.MessageEnd();
+
     std::ofstream outMe("me.info");
     if (outMe.is_open()) {
         outMe << name << std::endl;
@@ -404,13 +471,35 @@ void saveMeInfo(const std::string& name, ClientState& state) {
             outMe << std::hex << std::setw(2) << std::setfill('0') << (int)state.clientID[i];
         }
         outMe << std::dec << std::endl;
-
-        std::string base64PrivKey;
-        CryptoPP::Base64Encoder encoder(new CryptoPP::StringSink(base64PrivKey), false);
-        state.rsapriv.Save(encoder);
-        encoder.MessageEnd();
-
         outMe << base64PrivKey << std::endl;
         outMe.close();
     }
+
+    std::ofstream outPriv("priv.key");
+    if (outPriv.is_open()) {
+        outPriv << base64PrivKey << std::endl;
+        outPriv.close();
+    }
+}
+
+
+std::string fixJsonBackslashes(const std::string& rawJson) {
+    std::string out;
+    out.reserve(rawJson.size() * 2);
+    for (size_t i = 0; i < rawJson.size(); ++i) {
+        if (rawJson[i] == '\\') {
+            if (i + 1 < rawJson.size() && (rawJson[i + 1] == '\\' || rawJson[i + 1] == '\"' || rawJson[i + 1] == '/')) {
+                out += rawJson[i];
+                out += rawJson[i + 1];
+                ++i;
+            }
+            else {
+                out += "\\\\";
+            }
+        }
+        else {
+            out += rawJson[i];
+        }
+    }
+    return out;
 }
